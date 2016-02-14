@@ -1,3 +1,20 @@
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+ __ _ ___ _ _  _ __  ___ _ _  __ _
+/ _` / -_) ' \| '_ \/ _ \ ' \/ _` |
+\__, \___|_||_| .__/\___/_||_\__, |
+|___/         |_|            |___/
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+genpong is a fork of krzysz00's cl-pong, which I wired up to my
+genetic programming engine, genlin (see the genlin repo for details).
+The basic idea: a population of pseudo-assembly programmes gradually
+adapts to the game of pong. This is pretty close to what I did a
+couple of years ago with neuropong, but with linear genetic
+programming instead of evolving neural nets, and with common lisp
+instead of python.
+
+ORIGINAL README:
+
 cl-pong is a Pong (tm) clone written in Common Lisp. There's no AI
 yet, and the only dependency is lispbuilder-sdl. This is a bit of a
 private bit of summer hacking, but feel free to take and do as you
