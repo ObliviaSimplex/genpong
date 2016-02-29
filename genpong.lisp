@@ -49,6 +49,13 @@
 
 (defvar *score* '(0 0))
 
+(defvar *ballsize* 8)
+
+(defparameter *serve* :left) ;; total hackjob
+;; when *serve* is :left, the angle of serve is determined by the left paddle
+;; when *serve* is :right, the angle is determined by the right paddle
+;; when *serve* is nil, the angle is random. 
+
 (defgeneric draw (thing))
 (defgeneric move (thing amount))
 (defgeneric reflect-p (thing ball))
@@ -56,8 +63,35 @@
 
 (defun random-angle ()
   (let* ((slice 12)
-         (roll (random (1- slice))))
-    (+ (* roll (/ 360 slice)) (/ (/ 360 slice) 2))))
+         (roll (random slice)))
+    (mod (+ (* roll (/ 360 slice)) (/ 360 (* slice 2))) 360)))
+
+(defun serve-angle (y &optional (side :left))
+  (declare (ignorable side))
+  (labels ((pyth (s1 s2)
+             (sqrt (+ (expt s1 2) (expt s2 2))))
+           (rad->deg (r)
+             (* 180.0 (/ r pi)))
+           (angle (h v)
+             (rad->deg (acos (/ h (pyth h v))))))
+    (let* ((midpoint (/ +screen-height+ 2))
+           (netline  (/ +screen-width+ 2))
+           (y-offset  (- y midpoint))
+           (d-offset (if (< y-offset 0) 1 -1)))
+      ;; (FORMAT T "MIDPOINT = ~D   NETLINE = ~D  Y-OFFSET = ~D~%" midpoint netline y-offset)
+      (+ (+ 90 (* d-offset (angle netline y-offset)))
+         (if (eq side :left) 0 180)))))
+      
+
+(defun serve (thegame &optional (side :left) (ballsize *ballsize*))
+  (let ((server (if (eq side :left) (left thegame) (right thegame))))
+    (setf (ball *game*)
+          (make-instance 'ball
+                         :x (x server)
+                         :y (y server)
+                         :r ballsize
+                         :angle (serve-angle (y server) side)))))
+                       
 
 (defclass game ()
   ((left :initform (make-instance 'paddle
@@ -75,9 +109,11 @@
    (ball :initform (make-instance 'ball 
 				  :x (/ +screen-width+ 2)
 				  :y (/ +screen-height+ 2)
-				  :r 8
+				  :r *ballsize*
 				  :angle (random-angle))
 	 :accessor ball)
+   (ticker :initform 0
+           :accessor ticker)
    (game-p :initform nil :accessor game-p)))
 
 (defclass reflectable () ())
@@ -110,7 +146,8 @@
   (loop for i in (reflectables game) do
        (when (reflect-p i ball)
          (reflect i ball)
-         (return-from reflect-p t))))
+         (return-from reflect-p i)))) ;; have it return the reflectable
+;; so that we can use it later to see how often a paddle is making contact
 
 (defmethod draw ((game game))
   (fill-surface *black*)
@@ -192,9 +229,6 @@
                         (round (y ball))
                         (r ball)))
 
-;; Data grabber for AI
-;; (defun ball-pos ()
-  
 
 ;; Here's the player control interface.
 (defun process-key (key game)
@@ -214,13 +248,20 @@
 
 
 (defun execute-paddle (&key input seq)
-  (let ((output (genlin::execute-sequence seq
-                                          :input input
-                                          :output '(0)
-                                          :debug nil)))
-    
-    (and *debug* (FORMAT T "INPUT: ~A~%OUTPUT: ~A~%" input output))
-    (round (* (tanh (* (car output) 1/500)) 5)))) ;; 0 or small  = stand still, + go down, - go up
+  (flet ((boil (x)
+           (round (* 2 (tanh x)))))
+    (let* ((output (genlin::execute-sequence seq
+                                             :input input
+                                             :output '(0 1)
+                                             :debug nil))
+           (up (boil (elt output 0)))
+           (down (boil (elt output 1))))
+
+    ;; (and *debug* (FORMAT T "INPUT: ~A~%OUTPUT: ~A~%" input output))
+    ;; (- down up))))
+      (+ up down))))
+;;(elt '(-2 2) (genlin::register-vote output)))))
+    ;;(round (* (tanh (* (car output) 1/500)) 5)))) ;; 0 or small  = stand still, + go down, - go up
     
                                           
 
@@ -256,19 +297,22 @@
                                 other-ext (rely other-y))))
             (setf (game-p game) t)))))))
   
-
-(defstruct match l-crt r-crt score game)
-
    
 (defun init-pong-machine-params ()
-  (setf genlin::*opcode-bits* 3
+  (setf *debug* nil)
+  (setf genlin::*debug* nil)
+  (setf genlin::*opcode-bits* 2
         genlin::*source-register-bits* 4 ;; 7 input params
-        genlin::*destination-register-bits* 2)
+        genlin::*destination-register-bits* 2
+        genlin::*out-reg* '(0 1))
   (genlin::update-dependent-machine-parameters))
 
 (defun init-pong-population-params ()
-  (setf genlin::*number-of-islands* 1
-        genlin::*population-size* 100))
+  (setf genlin::*dataset* :pong)
+  (setf genlin::*sex* :nil)
+  (setf genlin::*mutation-rate* 1)
+  (setf genlin::*number-of-islands* 4
+        genlin::*population-size* 400))
 
 (defun gp-main ()
   (init-pong-population-params)
@@ -291,16 +335,63 @@
     (setf father (apply #'pong-match players-3-and-4))
     (setf children (genlin::mate mother father :island island))
     (setf losers (set-difference contenders (list mother father)))
-    (FORMAT T "MOTHER: ~A~%FATHER: ~A~%CHILDREN: ~A~%"
-            mother father children)
+    ;; (FORMAT T "MOTHER: ~A~%FATHER: ~A~%CHILDREN: ~A~%"
+    ;;         mother father children)
     (nsubst (car children) (car losers)
             (genlin::island-deme island))
     (nsubst (cadr children) (cadr losers)
             (genlin::island-deme island))))
+
+(defun index-of-most (sequence comparator)
+  (reduce #'(lambda (x y)
+              (if (funcall comparator (elt sequence x) (elt sequence y)) x y))
+          (loop for i below (length sequence) collect i)))
+                  
+
+;; set up only for asexual reproduction, for now
+;; it can easily be adapted to accommodate sexual reproduction -- just have
+;; it select two winners instead of one (&, resp, losers)
+(defun co-pong-tournement (left-isle right-isle &key (l-num 3) (r-num 3))
+  (let* ((l-pop (island-deme left-isle))
+         (r-pop (island-deme right-isle))
+         (l-cont (subseq (shuffle l-pop) 0 l-num))
+         (r-cont (subseq (shuffle r-pop) 0 r-num))
+         (l-scores (make-array l-num :initial-element 0))
+         (r-scores (make-array r-num :initial-element 0))
+         (l-winner)
+         (r-winner)
+         (l-loser)
+         (r-loser)
+         (l-child)
+         (r-child))
+    (loop
+       for leftie in l-cont
+       for li below l-num do
+         (loop
+            for rightie in r-cont
+            for ri below r-num do
+              (multiple-value-bind (winner score)
+                  (pong-match leftie rightie :server :left)
+                (declare (ignorable winner))
+                (incf (aref l-scores l-num) (- (first score) (second score)))
+                (incf (aref r-scores r-num) (- (second score) (first score)))
+                (FORMAT T "L-SCORES: ~A    R-SCORES: ~A~%" l-scores r-scores))))
+    (setf l-winner (elt l-cont (index-of-most l-scores #'>)))
+    (setf r-winner (elt r-cont (index-of-most r-scores #'>)))
+    (setf l-loser (elt l-cont (index-of-most l-scores #'<)))
+    (setf r-loser (elt r-cont (index-of-most r-scores #'<)))
+    (setf l-child (car (mate r-winner r-winner :sex nil))) ;; wasteful kludge
+    (setf r-child (car (mate l-winner l-winner :sex nil))) ;; mate should accept single parents
+    (nsubst l-loser l-child (island-deme left-isle)) ;; replace losers with children
+    (nsubst r-loser r-child (island-deme right-isle))))
+  
+
     
-                            
+
+(defvar *stop* nil)
 
 (defun pong-evolve (&key (fps 120))
+  (setf *stop* nil)
   (with-init (sdl-init-video)
     (window +screen-width+
             +screen-height+ :title-caption "GENPONG!")
@@ -315,71 +406,113 @@
        (loop for isle in genlin::+island-ring+ do
             (setf (car *score*) 0
                   (cadr *score*) 0)
-            (pong-tournement isle)))))
+            (incf (genlin::island-era isle))
+
+            (format t "ISLAND ~A ERA ~D ~%"
+                    (genlin::roman (genlin::island-id isle))
+                    (genlin::island-era isle))
+            (pong-tournement isle)
+            (genlin::migrate-freely isle)
+            (when *stop* (return))
+          ;;(genlin::print-statistics genlin::+island-ring+)
+            ))))
+
+(defun setup-coevolution-populations ()
+  (setf genlin::*dataset* :pong
+        genlin::*sex* :nil
+        genlin::*mutation-rate* 75/100
+        genlin::*number-of-islands* 2
+        genlin::*population-size* 200)
+  (init-population genlin::*population-size* 25
+                   :number-of-islands genlin::*number-of-islands*)) ;; clumsy
+
+
+(defun pong-coevolve (&key (fps 120)) ;; not particularly elegant, but let's get it working first
+  (setf *stop* nil)
+  (setup-coevolution-populations)
+  (with-inti (sdl-init-video)
+    (window +screen-width+
+            +screen-height+ :title-caption "GENPONG COEVOLUTION!")
+    (update-display)
+    (initialize-default-font *font-10x20*)
+    (setf (frame-rate) fps)
+    (with-color (col *white*)
+      ;;; so far this has been an exact repetition of the code in pong-evolve
+      (let ((left-isle (first +island-ring+))
+            (right-isle (second +island-ring+)))
+        (loop while (not *stop*) do
+             (setf (car *score*) 0
+                   (cadr *score*) 0)
+             (incf (island-era left-isle))
+             (incf (island-era right-isle))
+             (format t "ERA ~D~%" (island-era left-isle))
+             (
+           
+           
+      
+(defun blind-rush (&optional (yeah? t))
+  (setf (frame-rate) (if yeah? 0 120))
+  (setf *headless* yeah?))
 
       
-(defvar *endgame* 21)
+(defvar *endgame* 2)
 
 ;; BUG: the ball bounces asymmetrically off the two paddles.
 ;; if it hits right paddle at 90 deg, it'll bounce 180 deg back
 ;; but if it hits left paddle at 90 deg, it'll bounce at a sharp,
 ;; upward angle. this gives the left paddle a huge advantage.
 
-(defun pong-match (l-crt r-crt &key (headless nil))
-  (declare (ignorable headless))
-  ;; (let ((*game* (make-instance 'game))
-  ;;       (*score* '(0 0)))
- ;; ? 
-    ;; will these lets be enough to capture dynamically future
-    ;; references to *game* and *score*? Aiming at future
-    ;; threadsafety here. 
-    
-    ;; transpose the contents of main here
-    ;; but remove any reference to r/w global dynamic vars
-    ;; and plug in creatures to control the paddles
-    ;; return results that a tournement! like function can use. 
-    ;; there should be a flag that makes a match visible or
-    ;; (much faster and) invisible. but first i need to figure out
-    ;; how sdl works...
-    ;; so, for now, some cut-and-pasta from main
-    ;;;
+(defvar *headless* nil)
 
-  (setf *game* (make-instance 'game))
-  
-  (block the-match
-    (setf *score* '(0 0))
-    (with-events (:poll)
-      (:quit-event () t)
-      (:key-down-event 
-       (:key key)
-       (loop named start-game do
-            (process-key key *game*)
-            (when (game-p *game*)
-              (return-from start-game t))))
-      (:idle
-       (when (= (reduce #'+ *score*) *endgame*)
-         (return-from the-match))
-       (loop named automata do
-            (ai-paddle *game* :right
-                       :seq (genlin::creature-seq r-crt))
-            (ai-paddle *game* :left
-                       :seq (genlin::creature-seq l-crt))
+(defvar *serve-delay* 80)
+(defun pong-match (l-crt r-crt &key (server nil))
+  (let ((l-pings 0)
+        (r-pings 0))
+    (setf *game* (make-instance 'game))
+    (enable-key-repeat 16 16)  
+    (block the-match
+      (setf *score* '(0 0))
+      (with-events (:poll)
+        (:quit-event () t)
+        (:key-down-event 
+         (:key key)
+         (loop named start-game do
+              (process-key key *game*)
+              (when (game-p *game*)
+                (return-from start-game t))))
+        (:idle
+         (incf (ticker *game*))
+         (when (and server (< (ticker *game*) *serve-delay*))
+           (serve *game*))
+         (when (>= (reduce #'max *score*) *endgame*)
+           (return-from the-match))
+         (loop named automata do
+              (ai-paddle *game* :right
+                         :seq (genlin::creature-seq r-crt))
+              (ai-paddle *game* :left
+                         :seq (genlin::creature-seq l-crt))
             (and *debug* (FORMAT T "*** SCORE: ~A ***~%" *score*))
-          ;; for now, just left AI
-            (when (game-p *game*)
-              (return-from automata t)))
-       ;; TODO: Add AI here
-       ;; will do! 
-       (loop repeat 5 do ;; why 5?
-            (when (game-p *game*)
-              (reflect-p *game* (ball *game*))
-              (if (game-p *game*)
+              (when (game-p *game*)
+                (return-from automata t)))
+         ;; TODO: Add AI here
+         ;; will do! 
+         (loop repeat 5 do ;; why 5?
+              (when (game-p *game*)
+                (case (reflect-p *game* (ball *game*))
+                  (((right game)) (incf r-pings))
+                  (((left game)) (incf l-pings)))                  
+                (if (game-p *game*)
 		    (move (ball *game*) 1))))
-       (draw *game*)
-       (update-display))))
-  (if (> (first *score*) (second *score*))
-      l-crt
-      r-crt))
+         (unless *headless*
+           (draw *game*)
+           (update-display)))))
+    
+    (and *debug* (FORMAT T "LEFT PINGS: ~D  RIGHT PINGS: ~D~%"
+                         l-pings r-pings))
+    (values (if (> (first *score*) (second *score*))
+                l-crt
+                r-crt)
+            *score*)))
   
   
 (defparameter *warmup-seq1* #(0))
