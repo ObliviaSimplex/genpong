@@ -25,9 +25,9 @@
 
 (in-package #:genpong)
 
-(defconstant +screen-width+ 720)
-(defconstant +screen-height+ 400)
-(defconstant +paddle-width+ 16)
+(defparameter +screen-width+ 800);1600);720)
+(defparameter +screen-height+ 450);900);400)
+(defparameter +paddle-width+ 16)
 
 
 (defun %angle->xy (angle amount primary-x)
