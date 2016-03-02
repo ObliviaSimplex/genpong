@@ -44,11 +44,13 @@
 (in-package #:genpong)
 
 (defparameter *screen-msg* "")
+(defparameter *msg-delay* 300)
 (defvar *debug* 1)
 
 (defvar *endgame* 5)
 ;(setf *endgame* 5)
 (defvar *game* nil)
+
 
 (defvar *score* '(0 0))
 
@@ -285,7 +287,7 @@
                                            :output '(0 1)
                                            :debug nil)))   
     (if (= (car output) (cadr output) 0)
-        (pick '(-2 2))
+        0 ;;(pick '(-1 1))
         (elt '(-2 2) (genlin::register-vote output)))))
 
 (defun ai-paddle (game side-key &key (seq))
@@ -324,7 +326,7 @@
 (defun init-pong-machine-params ()
   (setf *debug* nil)
   (setf genlin::*debug* nil)
-  (setf genlin::*opcode-bits* 2
+  (setf genlin::*opcode-bits* 3
         genlin::*source-register-bits* 4 ;; 7 input params
         genlin::*destination-register-bits* 2
         genlin::*out-reg* '(0 1))
@@ -332,7 +334,7 @@
 
 (defun init-pong-population-params ()
   (setf genlin::*dataset* :pong)
-  (setf genlin::*sex* :nil)
+  (setf genlin::*sex* nil)
   (setf genlin::*mutation-rate* 1)
   (setf genlin::*number-of-islands* 4
         genlin::*population-size* 400))
@@ -436,12 +438,13 @@
             for rightie in r-cont
             for ri below r-num do
               (setf *score* '(0 0))
-              (setf score (cadr (pong-match leftie rightie :server *serve*)))
+              (setf score (cadr (pong-match leftie rightie
+                                            :server *serve*)))
             ;; (FORMAT T "** SCORES: ~A **" score)
-              (setf *screen-msg*
-                    (if (> (first score) (second score))
-                        "PARASITE WINS ON LEFT"
-                        "HOST WINS ON RIGHT"))
+              ;; (setf *screen-msg*
+              ;;       (if (> (first score) (second score))
+              ;;           "PARASITE WINS ON LEFT"
+              ;;           "HOST WINS ON RIGHT"))
               (incf (aref l-scores li) (score-credit score 0))
             ;;(- (first score)
             ;;                           (second score)))
@@ -505,11 +508,17 @@
 
 (defun setup-coevolution-populations ()
   (setf genlin::*dataset* :pong
-        genlin::*sex* :nil
+        genlin::*sex* nil
         genlin::*mutation-rate* 75/100
         genlin::*number-of-islands* 2
         genlin::*population-size* 200)
   (genlin::setup-population)
+  ;; set parasite mutation rate to 25%
+  ;; set host mutation rate to 50%
+  (mapc #'(lambda (x) (setf (genlin::creature-mut x) 1/4))
+        (genlin::island-deme (car +island-ring+)))
+  (mapc #'(lambda (x) (setf (genlin::creature-mut x) 1/2))
+        (genlin::island-deme (cadr +island-ring+)))
   (print (de-ring +island-ring+)));; genlin::*population-size* 25
                    ;;:number-of-islands genlin::*number-of-islands*)) ;; clumsy
 
@@ -577,11 +586,12 @@
                 (return-from start-game t))))
         (:idle
          (incf (ticker *game*))
-         (when (and server (< (ticker *game*) *serve-delay*))
-           (setf *screen-msg* "")
-           (serve *game*))
+         (if (and server (< (ticker *game*) *serve-delay*))
+             (serve *game*))
          (when (> (ticker *game*) *stalemate-timeout*)
            (setf *game* (make-instance 'game)))
+         (when (> (ticker *game*) *msg-delay*)
+           (setf *screen-msg* ""))
          (when (>= (reduce #'max *score*) *endgame*)
            ;; (FORMAT T "MAX SCORE REACHED AT ~A SO ENDING MATCH~%"
            ;;         *score*)
@@ -607,8 +617,10 @@
            (draw *game*)
            (update-display)))))
     (if (> (first *score*) (second *score*))
-        (setf *screen-msg* "PARASITE ON LEFT WINS")
-        (setf *screen-msg* "HOST ON RIGHT WINS"))
+        (setf *screen-msg* (format nil "PARASITE ~A WINS ON LEFT"
+              (genlin::creature-id l-crt)))
+        (setf *screen-msg* (format nil "HOST ~A WINS ON RIGHT"
+              (genlin::creature-id r-crt))))
     (and *debug* (FORMAT T "LEFT PINGS: ~D  RIGHT PINGS: ~D~%"
                          l-pings r-pings))
     (list (if (> (first *score*) (second *score*))
