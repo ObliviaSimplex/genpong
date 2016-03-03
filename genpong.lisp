@@ -44,13 +44,14 @@
 (in-package #:genpong)
 
 (defparameter *screen-msg* "")
-(defparameter *msg-delay* 300)
+(defparameter *msg-delay* 256)
 (defvar *debug* 1)
 
-(defvar *endgame* 5)
+(defvar *endgame* 2)
 ;(setf *endgame* 5)
 (defvar *game* nil)
 
+(defparameter *starting-height-ratio* 1/2)
 
 (defvar *score* '(0 0))
 
@@ -88,11 +89,23 @@
              (rad->deg (acos (/ h (pyth h v))))))
     (let* ((midpoint (/ +screen-height+ 2))
            (netline  (/ +screen-width+ 2))
+           (ang)
            (y-offset  (- y midpoint))
            (d-offset (if (< y-offset 0) 1 -1)))
       ;; (FORMAT T "MIDPOINT = ~D   NETLINE = ~D  Y-OFFSET = ~D~%" midpoint netline y-offset)
-      (+ (+ 90 (* d-offset (angle netline y-offset)))
-         (if (eq side :left) 0 180)))))
+
+      ;; comment out this game to make boring convergence likely
+      ;; (if (< (abs y-offset) 50) (setf y-offset (* d-offset 10)))
+      
+      ;; because we don't want the server serving straight ahead
+      ;; it leads to too many infinite, boring games
+      (setf ang (+ (+ 90 (* d-offset (angle netline y-offset)))
+                   (if (eq side :left) 0 180)))
+      (if (< (abs (- ang 90)) 10)
+          (incf ang (* d-offset 10)))
+          
+      ang)))
+      
       
 
 (defun serve (thegame &optional (side :left) (ballsize *ballsize*))
@@ -112,13 +125,13 @@
 (defclass game ()
   ((left :initform (make-instance 'paddle
 				  :x +paddle-width+
-				  :y (random +screen-height+) ;;(/ +screen-height+ 2)
+				  :y (* +screen-height+ *starting-height-ratio*);;(/ +screen-height+ 3) ;; (random +screen-height+) ;;
 				  :extent *left-height*)
 	 :accessor left)
    (right :initform (make-instance 'paddle
 				   :x (- +screen-width+
                                          +paddle-width+)
-				   :y (random +screen-height+) ;;(/ +screen-height+ 2)
+				   :y (* +screen-height+ *starting-height-ratio*) ;;(/ +screen-height+ 3) ;; (random +screen-height+)
 				   :extent *right-height*)
 	  :accessor right)
    (reflectables :initform nil :accessor reflectables)
@@ -234,7 +247,9 @@
       (t (angle ball)))))
 
 (defmethod move ((paddle paddle) amount)
-  (rangef (y paddle) 0 +screen-height+ amount))
+  (setf (y paddle)
+        (mod (+ (y paddle) amount) +screen-height+)))
+  ;;(rangef (y paddle) 0 +screen-height+ amount))
 
 (defmethod draw ((paddle paddle))
   (with-accessors ((x x) (y y) (extent extent)) paddle
@@ -288,7 +303,8 @@
                                            :debug nil)))   
     (if (= (car output) (cadr output) 0)
         0 ;;(pick '(-1 1))
-        (elt '(-2 2) (genlin::register-vote output)))))
+        (elt '(-2 2
+               ) (genlin::register-vote output)))))
 
 (defun ai-paddle (game side-key &key (seq))
   (flet ((relx (x)
@@ -335,15 +351,11 @@
 (defun init-pong-population-params ()
   (setf genlin::*dataset* :pong)
   (setf genlin::*sex* nil)
-  (setf genlin::*mutation-rate* 1)
-  (setf genlin::*number-of-islands* 4
-        genlin::*population-size* 400))
+  (setf genlin::*mutation-rate* .625)
+  (setf genlin::*number-of-islands* 2
+        genlin::*population-size* 200))
 
 (defun gp-main ()
-  (init-pong-population-params)
-  (init-pong-machine-params)
-  (genlin::setup-population)
-  (genlin::print-params)
   (pong-evolve))
 
 (defun pong-tournement (island)
@@ -375,7 +387,7 @@
           (loop for i below (length sequence) collect i)))
                   
 
-(defun choose-parent (sequence virulence)
+(defun choose-parent2 (sequence virulence)
   ;; because we're retaining info from the score of the game, this
   ;; ranking carries a little more information than the one used
   ;; in the virulence paper. but the basic idea is the same:
@@ -387,8 +399,6 @@
                             (1- (floor (* (length sequence)
                                         virulence)))
                           0))
-        ;; if virulence, e.g., = 75% , and length of sequence is 4,
-        ;; then target-rank = 3 (= (* 3/4 4))
         (seen)
         (grading (loop for i below (length sequence) collect
                       (cons i (elt sequence i)))))
@@ -402,7 +412,23 @@
     (car (elt (sort grading #'(lambda (x y) (< (cdr x) (cdr y))))
               target-rank))))
     
-    
+
+(defun choose-parent (sequence virulence)
+  (let* ((listified (coerce sequence 'list))
+         (max-score (reduce #'max listified))
+         (normalized (mapcar #'(lambda (x)
+                                 (if (zerop max-score) 0
+                                     (/ x max-score))) listified))
+         (adjusted (mapcar #'(lambda (x) (- (/ (* 2 x) virulence)
+                                       (/ (expt x 2) (expt virulence 2))))
+                           normalized))
+         (idx))
+    (FORMAT T "VIRULENCE: ~A~%NORMALIZED: ~A~%ADJUSTED: ~A~%"
+            virulence normalized adjusted)
+    (setf idx (index-of-most adjusted #'>))
+    (FORMAT T "CHOSEN IDX: ~D~%~%" idx)
+    idx))
+         
 
 ;; set up only for asexual reproduction, for now
 ;; it can easily be adapted to accommodate sexual reproduction -- just have
@@ -480,7 +506,14 @@
 (defvar *stop* nil)
 
 (defun pong-evolve (&key (fps 120))
+  (init-pong-population-params)
+  (init-pong-machine-params)
+  (genlin::setup-population)
+  (genlin::print-params)
   (setf *stop* nil)
+  (setf *serve* nil)
+  (setf *left-height* 30)
+  (setf *right-height* 30)
   (with-init (sdl-init-video)
     (window +screen-width+
             +screen-height+ :title-caption "GENPONG!")
@@ -511,7 +544,7 @@
         genlin::*sex* nil
         genlin::*mutation-rate* 75/100
         genlin::*number-of-islands* 2
-        genlin::*population-size* 200)
+        genlin::*population-size* 100) ;; was 400
   (genlin::setup-population)
   ;; set parasite mutation rate to 25%
   ;; set host mutation rate to 50%
@@ -527,8 +560,10 @@
   (setf *stop* nil)
   (init-pong-machine-params)
   (setup-coevolution-populations)
-  (setf *right-height* 36)
-  (setf *left-height* 24)
+  (setf *right-height* 30)
+  (setf *left-height* 30)
+  (setf *endgame* 3)
+  (genlin::print-params)
   (with-init (sdl-init-video)
     (window +screen-width+
             +screen-height+ :title-caption "GENPONG COEVOLUTION!")
@@ -549,10 +584,10 @@
              (co-pong-tournement left-isle right-isle))))))
            
            
-      
-(defun blind-rush (&optional (yeah? t))
-  (setf (frame-rate) (if yeah? 0 120))
-  (setf *headless* yeah?))
+
+(defun blind-rush ()
+  (setf (frame-rate) (if *headless* 120 0))
+  (setf *headless* (not *headless*)))
 
       
 
@@ -564,9 +599,10 @@
 
 (defvar *headless* nil)
 
-(defvar *serve-delay* 80)
+(defvar *serve-delay* 100)
 (defun pong-match (l-crt r-crt &key (server nil))
   (let ((l-pings 0)
+        (stalemates 0)
         (r-pings 0))
     (setf (car *score*) 0
           (cadr *score*) 0)
@@ -589,6 +625,9 @@
          (if (and server (< (ticker *game*) *serve-delay*))
              (serve *game*))
          (when (> (ticker *game*) *stalemate-timeout*)
+           (incf stalemates)
+           (when (> stalemates 3)
+             (return-from the-match))
            (setf *game* (make-instance 'game)))
          (when (> (ticker *game*) *msg-delay*)
            (setf *screen-msg* ""))
@@ -617,10 +656,12 @@
            (draw *game*)
            (update-display)))))
     (if (> (first *score*) (second *score*))
-        (setf *screen-msg* (format nil "PARASITE ~A WINS ON LEFT"
-              (genlin::creature-id l-crt)))
-        (setf *screen-msg* (format nil "HOST ~A WINS ON RIGHT"
-              (genlin::creature-id r-crt))))
+        (setf *screen-msg* (format nil "~A~A WINS ON LEFT"
+                                   (if *serve* "PARASITE " "")
+                                   (genlin::creature-id l-crt)))
+        (setf *screen-msg* (format nil "~A~A WINS ON RIGHT"
+                                   (if *serve* "HOST " "")
+                                   (genlin::creature-id r-crt))))
     (and *debug* (FORMAT T "LEFT PINGS: ~D  RIGHT PINGS: ~D~%"
                          l-pings r-pings))
     (list (if (> (first *score*) (second *score*))
